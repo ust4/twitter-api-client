@@ -18,21 +18,6 @@ from .util import get_headers, find_key, build_params
 reset = '\x1b[0m'
 colors = [f'\x1b[{i}m' for i in range(31, 37)]
 
-try:
-    if get_ipython().__class__.__name__ == 'ZMQInteractiveShell':
-        import nest_asyncio
-        nest_asyncio.apply()
-except:
-    ...
-
-if platform.system() != 'Windows':
-    try:
-        import uvloop
-        uvloop.install()
-    except ImportError as e:
-        ...
-
-
 class Search:
     def __init__(self, email: str = None, username: str = None, password: str = None, session: Client = None, **kwargs):
         self.save = kwargs.get('save', True)
@@ -40,14 +25,30 @@ class Search:
         self.logger = self._init_logger(**kwargs)
         self.session = self._validate_session(email, username, password, session, **kwargs)
 
+    def tweets_details(self, tweet_ids: list[int], **kwargs) -> list[dict]:
+        """
+        Get tweet data by tweet ids.
+
+        Includes tweet metadata as well as comments, replies, etc.
+
+        @param tweet_ids: list of tweet ids
+        @param kwargs: optional keyword arguments
+        @return: list of tweet data as dicts
+        """
+        return self.run(Operation.TweetDetail, tweet_ids, **kwargs)
+
     def run(self, queries: list[dict], limit: int = math.inf, out: str = 'data/search_results', **kwargs):
         out = Path(out)
         out.mkdir(parents=True, exist_ok=True)
         return asyncio.run(self.process(queries, limit, out, **kwargs))
 
     async def process(self, queries: list[dict], limit: int, out: Path, **kwargs) -> list:
-        async with AsyncClient(headers=get_headers(self.session)) as s:
-            return await asyncio.gather(*(self.paginate(s, q, limit, out, **kwargs) for q in queries))
+        if "proxies" in kwargs:
+            async with AsyncClient(headers=get_headers(self.session), proxies=kwargs["proxies"]) as s:
+                return await asyncio.gather(*(self.paginate(s, q, limit, out, **kwargs) for q in queries))
+        else:
+            async with AsyncClient(headers=get_headers(self.session)) as s:
+                return await asyncio.gather(*(self.paginate(s, q, limit, out, **kwargs) for q in queries))
 
     async def paginate(self, client: AsyncClient, query: dict, limit: int, out: Path, **kwargs) -> list[dict]:
         params = {
@@ -100,20 +101,17 @@ class Search:
                 data, entries, cursor = await fn()
                 if errors := data.get('errors'):
                     for e in errors:
-                        if self.debug:
-                            self.logger.warning(f'{YELLOW}{e.get("message")}{RESET}')
+                        self.logger.warning(f'{YELLOW}{e.get("message")}{RESET}')
                         return [], [], ''
                 ids = set(find_key(data, 'entryId'))
                 if len(ids) >= 2:
                     return data, entries, cursor
             except Exception as e:
                 if i == retries:
-                    if self.debug:
-                        self.logger.debug(f'Max retries exceeded\n{e}')
+                    self.logger.debug(f'Max retries exceeded\n{e}')
                     return
                 t = 2 ** i + random.random()
-                if self.debug:
-                    self.logger.debug(f'Retrying in {f"{t:.2f}"} seconds\t\t{e}')
+                self.logger.debug(f'Retrying in {f"{t:.2f}"} seconds\t\t{e}')
                 await asyncio.sleep(t)
 
     def _init_logger(self, **kwargs) -> Logger:
